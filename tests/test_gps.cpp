@@ -3,66 +3,57 @@
 #include <vector>
 #include "gps_processor.hpp"
 
-void test_haversine_distance()
+void test_stream_cleaning_teleport()
 {
-    GPSProcessor processor;
-    GPSPoint p1(1718000000, 12.9716, 77.5946);
-    GPSPoint p2(1718000010, 12.9730, 77.5960);
+    GPSProcessor processor(120.0, false); // 120 km/h limit
 
-    double dist = processor.calculateHaversineDistance(p1, p2);
-    // Distance should be around 150-200 meters for these coordinates
-    assert(dist > 100.0 && dist < 300.0);
-    std::cout << "[PASS] test_haversine_distance passed. Distance: " << dist << " meters\n";
-}
-
-void test_gap_backfill()
-{
-    // Threshold = 30s, Interval = 10s
-    GPSProcessor processor(30.0, 10.0);
-
-    std::vector<GPSPoint> raw_path = {
-        {1000, 12.9716, 77.5946, false},
-        {1050, 12.9750, 77.5980, false} // 50s gap (> 30s threshold)
+    std::vector<GPSPoint> raw_pings = {
+        {1000, 12.9716, 77.5946, 5.0, false},
+        {1004, 15.0000, 80.0000, 5.0, false}, // Bad fix / teleport jump (>3000 km/h) -> should be dropped
+        {1010, 12.9720, 77.5950, 5.0, false}  // Valid normal movement
     };
 
-    std::vector<GPSPoint> processed = processor.backfillGaps(raw_path);
-    // Original had 2 points; a 50s gap with 10s intervals should introduce intermediate points
-    assert(processed.size() > raw_path.size());
+    std::vector<GPSPoint> cleaned = processor.cleanStream(raw_pings);
 
-    // Verify at least one point is flagged as interpolated
-    bool found_interpolated = false;
-    for (const auto &pt : processed)
-    {
-        if (pt.is_interpolated)
-        {
-            found_interpolated = true;
-            break;
-        }
-    }
-    assert(found_interpolated);
-    std::cout << "[PASS] test_gap_backfill passed. Total processed points: " << processed.size() << "\n";
+    // The teleport ping should be removed, leaving 2 points instead of 3
+    assert(cleaned.size() == 2);
+    std::cout << "[PASS] test_stream_cleaning_teleport passed. Cleaned size: " << cleaned.size() << "\n";
 }
 
-void test_total_distance_reconstruction()
+void test_segment_rules()
 {
-    GPSProcessor processor(30.0, 10.0);
-    std::vector<GPSPoint> raw_path = {
-        {1000, 12.9716, 77.5946, false},
-        {1050, 12.9750, 77.5980, false}};
+    GPSProcessor processor(120.0, false);
+    std::vector<GPSPoint> path = {
+        {1000, 12.9716, 77.5946, 5.0, false},
+        {1030, 12.9720, 77.5950, 5.0, false} // 30s gap (<70s) -> SHORT_GAP_AERIAL
+    };
 
-    std::vector<GPSPoint> processed = processor.backfillGaps(raw_path);
-    double total_dist_km = processor.computeTotalDistanceKm(processed);
+    auto segments = processor.processSegments(path);
+    assert(segments.size() == 1);
+    assert(segments[0].rule == SegmentRule::SHORT_GAP_AERIAL);
+    std::cout << "[PASS] test_segment_rules passed with rule: " << ruleToString(segments[0].rule) << "\n";
+}
 
-    assert(total_dist_km > 0.0);
-    std::cout << "[PASS] test_total_distance_reconstruction passed. Total distance: " << total_dist_km << " km\n";
+void test_circuit_breaker_degraded()
+{
+    // Simulate provider down (circuit breaker tripped)
+    GPSProcessor processor(120.0, true);
+    std::vector<GPSPoint> path = {
+        {1000, 12.9716, 77.5946, 5.0, false},
+        {1500, 12.9800, 77.6000, 5.0, false}};
+
+    auto segments = processor.processSegments(path);
+    assert(segments.size() == 1);
+    assert(segments[0].rule == SegmentRule::DEGRADED);
+    std::cout << "[PASS] test_circuit_breaker_degraded passed. Rule: DEGRADED fallback active.\n";
 }
 
 int main()
 {
-    std::cout << "=== Running GPS Processor Unit Tests ===" << std::endl;
-    test_haversine_distance();
-    test_gap_backfill();
-    test_total_distance_reconstruction();
-    std::cout << "All unit tests passed successfully!\n";
+    std::cout << "=== Running MoveInSync Case Study 1 Upgraded Tests ===" << std::endl;
+    test_stream_cleaning_teleport();
+    test_segment_rules();
+    test_circuit_breaker_degraded();
+    std::cout << "All advanced test suites passed successfully!\n";
     return 0;
 }
